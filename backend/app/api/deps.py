@@ -1,7 +1,7 @@
 import logging
 from fastapi import Depends, HTTPException, status, Header
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional
+from typing import Optional, AsyncGenerator
 
 from app.core.database import get_session
 from app.core.security import get_user_id_from_token
@@ -13,9 +13,15 @@ from app.core.constants import UserStatus
 logger = logging.getLogger(__name__)
 
 
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """Get database session."""
+    async with get_session() as session:
+        yield session
+
+
 async def get_current_user(
     authorization: Optional[str] = Header(None),
-    db: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db),
 ) -> User:
     """Get current authenticated user."""
     if not authorization or not authorization.startswith("Bearer "):
@@ -78,9 +84,3 @@ async def check_credits(
         return current_user
 
     return _check
-
-
-async def get_db() -> AsyncSession:
-    """Get database session."""
-    async with get_session() as session:
-        yield session

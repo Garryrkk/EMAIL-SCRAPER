@@ -27,7 +27,7 @@ class AuthService:
             email=req.email,
             password=req.password,
             name=req.name,
-            company=req.company,
+            company=req.company if req.company and req.company.strip() else None,
         )
 
         # Generate tokens

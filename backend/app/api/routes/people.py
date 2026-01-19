@@ -6,7 +6,7 @@ from datetime import datetime
 from app.models import Person, Company, Email
 from app.auth.schemas import PersonCreate, PersonRead
 from app.api.routes.emails import Email
-from app.core.database import get_db
+from app.api.deps import get_db
 import unicodedata
 
 class PeopleService:

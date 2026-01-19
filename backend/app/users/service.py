@@ -31,7 +31,7 @@ class UserService:
             email=email,
             password_hash=hash_password(password),
             name=name,
-            company=company,
+            company=company if company and company.strip() else None,
             plan=plan,
         )
         self.db.add(user)

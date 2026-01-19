@@ -11,10 +11,11 @@ logger = logging.getLogger(__name__)
 
 Base = declarative_base()
 
-# --- Import the actual SQLAlchemy models from your routes folder ---
-from app.api.routes.people import Person
-from app.api.routes.emails import Email
-from app.api.routes.companies import Company
+# Import models so metadata is populated when tables are created
+from app.users.model import User
+from app.people.model import Person
+from app.emails.model import Email
+from app.companies.model import Company
 
 # Global session factory and engine
 _session_factory: async_sessionmaker = None
@@ -26,13 +27,28 @@ async def init_db():
 
     pool_class = NullPool if settings.ENVIRONMENT == "test" else None
 
+    engine_kwargs = {
+        "echo": settings.DEBUG,
+        "pool_pre_ping": True,
+    }
+
+    is_sqlite = settings.DATABASE_URL.startswith("sqlite")
+
+    if pool_class:
+        engine_kwargs["poolclass"] = pool_class
+    elif not is_sqlite:
+        # Only apply pool sizing for non-SQLite engines
+        engine_kwargs.update(
+            {
+                "pool_size": settings.DB_POOL_SIZE,
+                "max_overflow": settings.DB_MAX_OVERFLOW,
+                "pool_recycle": settings.DB_POOL_RECYCLE,
+            }
+        )
+
     _engine = create_async_engine(
         settings.DATABASE_URL,
-        echo=settings.DEBUG,
-        pool_pre_ping=True,
-        poolclass=pool_class,
-        pool_size=settings.DB_POOL_SIZE,
-        max_overflow=settings.DB_MAX_OVERFLOW,
+        **engine_kwargs,
     )
 
     _session_factory = async_sessionmaker(
@@ -57,24 +73,8 @@ async def close_db():
 
 
 @asynccontextmanager
-async def get_db_session():
-    if _session_factory is None:
-        raise RuntimeError("Database not initialized")
-
-    async with _session_factory() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
-
-
-
 async def get_session() -> AsyncSession:
-    """Dependency for FastAPI to inject async DB session."""
+    """Provide an async session for FastAPI dependencies."""
     if _session_factory is None:
         raise RuntimeError("Database not initialized")
 
@@ -87,3 +87,9 @@ async def get_session() -> AsyncSession:
             raise
         finally:
             await session.close()
+
+
+async def get_db():
+    """FastAPI dependency for getting a database session."""
+    async with get_session() as session:
+        yield session

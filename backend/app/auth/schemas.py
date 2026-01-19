@@ -23,9 +23,9 @@ class PersonRead(BaseModel):
 class SignupRequest(BaseModel):
     """User signup request."""
     email: EmailStr
-    password: str = Field(..., min_length=8)
+    password: str = Field(..., min_length=8, max_length=128)
     name: str = Field(..., min_length=2, max_length=255)
-    company: Optional[str] = Field(None, max_length=255)
+    company: Optional[str] = Field(default=None, max_length=255)
 
 
 class LoginRequest(BaseModel):
@@ -52,11 +52,11 @@ class UserResponse(BaseModel):
     id: str
     email: str
     name: str
-    company: Optional[str]
+    company: Optional[str] = None
     plan: str
     status: str
-    created_at: datetime
-    updated_at: datetime
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
