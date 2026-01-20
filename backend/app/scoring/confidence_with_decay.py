@@ -19,6 +19,11 @@ class ConfidenceEngineWithDecay:
     - Discovered (unverified): -10% per 30 days
     - Inferred (verified): -5% per 180 days
     - Inferred (unverified): -20% per 7 days
+    
+    CRITICAL SAFETY RULES:
+    1. Decay applies ONLY to deliverability/association scores
+    2. Existence facts (discovered emails) NEVER decay from 1.0
+    3. This class operates on heuristic scores, not ground truth
     """
 
     @staticmethod
@@ -32,6 +37,9 @@ class ConfidenceEngineWithDecay:
         """
         Apply time-based decay to confidence score.
         
+        HARD GUARD: Factual discoveries (1.0) NEVER decay.
+        This protects existence integrity.
+        
         Returns:
             {
                 "base_confidence": float,
@@ -41,6 +49,18 @@ class ConfidenceEngineWithDecay:
                 "days_old": int
             }
         """
+        # 🔒 MANDATORY GUARD: Protect factual existence from decay
+        if source == "discovered" and base_confidence == 1.0:
+            return {
+                "base_confidence": 1.0,
+                "decay_factor": 1.0,
+                "final_confidence": 1.0,
+                "reason": "Factual discovery does not decay",
+                "days_old": 0,
+                "source": source,
+                "verification_status": verification_status,
+            }
+        
         now = datetime.utcnow()
         reference_date = last_verified_at or created_at or now
 
@@ -106,6 +126,9 @@ class ConfidenceEngineWithDecay:
         - Discovered emails: Re-verify if > 180 days old
         - Inferred emails: Re-verify if > 30 days old
         - Always re-verify if verification_status is not "valid"
+        
+        CRITICAL: Only reverify based on DELIVERABILITY decay,
+        never existence or association confidence.
         """
         now = datetime.utcnow()
         last_verified = last_verified_at or datetime.utcnow()
@@ -114,7 +137,10 @@ class ConfidenceEngineWithDecay:
 
         source = email_dict.get("source", "unknown")
         verification_status = email_dict.get("verification_status", "unknown")
-        confidence = email_dict.get("confidence", 0.0)
+        
+        # 🔒 SAFE: Only check deliverability confidence for decay
+        # Never check existence or association
+        deliverability = email_dict.get("deliverability_confidence")
 
         # Always re-verify if not valid
         if verification_status != "valid":
@@ -128,8 +154,9 @@ class ConfidenceEngineWithDecay:
         if source == "inferred" and days_since_verification > 30:
             return True
 
-        # Re-verify if confidence has decayed below 50%
-        if confidence < 0.50:
+        # Re-verify if DELIVERABILITY has decayed below 50%
+        # (Never reverify based on existence confidence)
+        if deliverability is not None and deliverability < 0.50:
             return True
 
         return False

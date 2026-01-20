@@ -1,6 +1,8 @@
 import logging
 from typing import Dict, Optional
 from datetime import datetime
+from app.verification.interpreter import SMTPResultInterpreter
+from app.verification.smtp import SMTPVerificationResult
 
 logger = logging.getLogger(__name__)
 
@@ -9,19 +11,16 @@ class LayeredConfidenceEngine:
     """
     Three separate confidence layers (Apollo/Hunter model).
     
-    This is the critical fix:
-    - Layer 1: Email EXISTENCE (factual, not probabilistic)
-    - Layer 2: PERSON-EMAIL association (probabilistic)
-    - Layer 3: DELIVERABILITY (time-aware, MX-aware)
-    
-    These MUST be treated separately.
+    This layer INTERPRETS SMTP results.
+    It does NOT accept confidence from SMTP.
+    SMTP only provides technical signals.
     """
 
     @staticmethod
     def score_email_existence(
         email: str,
         source: str,  # "discovered", "inferred", "verification_inferred"
-        verification_status: str = "unverified",
+        smtp_result: Optional[SMTPVerificationResult] = None,
     ) -> Dict:
         """
         LAYER 1: Does this email EXIST for this company?
@@ -29,40 +28,48 @@ class LayeredConfidenceEngine:
         This is FACTUAL, not probabilistic.
         
         Rules:
-        - Discovered on website: 100% (FACT)
-        - Verified via SMTP: 100% (FACT)
-        - Inferred/guessed: NOT applicable here
+        - Discovered on website: 1.0 (FACT, SMTP irrelevant)
+        - Generated + SMTP accepts: 1.0 (FACT)
+        - Generated + SMTP rejects: 0.0 (NOT proven)
         
-        Returns:
-            {
-                "exists": bool,
-                "existence_confidence": 1.0 | 0.0,
-                "reason": str
-            }
+        CRITICAL: SMTP does NOT override discovery.
         """
         
-        # CRITICAL: Discovered emails are ALWAYS facts
+        # RULE: Discovered emails are facts
         if source == "discovered":
             return {
                 "exists": True,
                 "existence_confidence": 1.0,
                 "reason": "Found on company website (factual)",
                 "is_factual": True,
+                "smtp_ignored": True,  # SMTP doesn't matter for discovered
             }
         
         # Verification-led inference (fallback)
         if source == "verification_inferred":
-            if verification_status == "valid":
-                return {
-                    "exists": True,
-                    "existence_confidence": 1.0,
-                    "reason": "Generated and SMTP verified (factual)",
-                    "is_factual": True,
-                }
+            if smtp_result:
+                interpreter = SMTPResultInterpreter()
+                interpretation = interpreter.interpret(smtp_result)
+                
+                # SMTP accepts = email exists
+                if interpretation.get("smtp_accepts"):
+                    return {
+                        "exists": True,
+                        "existence_confidence": 1.0,
+                        "reason": "Generated and SMTP verified (factual)",
+                        "is_factual": True,
+                    }
+            
+            return {
+                "exists": False,
+                "existence_confidence": 0.0,
+                "reason": "Generated but SMTP did not verify",
+                "is_factual": False,
+            }
         
         # Pure inferred (guessed, NOT factual)
         return {
-            "exists": False,  # Or uncertain
+            "exists": False,
             "existence_confidence": 0.0,
             "reason": "Inferred pattern (not verified as existing)",
             "is_factual": False,
@@ -75,24 +82,13 @@ class LayeredConfidenceEngine:
         email: str,
         pattern_used: Optional[str] = None,
         pattern_confidence: float = 0.0,
-        verification_status: str = "unverified",
+        smtp_result: Optional[SMTPVerificationResult] = None,
     ) -> Dict:
         """
         LAYER 2: Does this email belong to THIS PERSON?
         
         This is PROBABILISTIC.
-        Used when user asks "Find John Doe's email"
-        
-        Factors:
-        - Pattern reliability
-        - Verification success
-        - Name matching
-        
-        Returns:
-            {
-                "person_match_confidence": 0.0-1.0,
-                "reason": str
-            }
+        SMTP provides SIGNAL, not truth.
         """
         
         # Base: Does pattern exist?
@@ -105,96 +101,99 @@ class LayeredConfidenceEngine:
         # Pattern exists: Apply pattern confidence
         base_confidence = pattern_confidence * 0.4  # Max 40% from pattern alone
         
-        # Verification boost
-        verification_boost = 0.0
-        if verification_status == "valid":
-            verification_boost = 0.55  # SMTP confirmation adds 55%
-        elif verification_status == "catch_all":
-            verification_boost = 0.10  # Some boost but risky
+        # SMTP as signal (not truth)
+        verification_signal = 0.0
+        if smtp_result:
+            interpreter = SMTPResultInterpreter()
+            interpretation = interpreter.interpret(smtp_result)
+            
+            # SMTP accepts = adds to association confidence
+            if interpretation.get("smtp_accepts") and not interpretation.get("catch_all"):
+                verification_signal = 0.55  # Strong signal
+            elif interpretation.get("catch_all"):
+                verification_signal = 0.10  # Weak signal (catch-all)
+            # SMTP rejects = no signal, but doesn't prove association wrong
         
-        total_confidence = base_confidence + verification_boost
+        total_confidence = base_confidence + verification_signal
         
         return {
-            "person_match_confidence": min(total_confidence, 1.0),
+            "person_match_confidence": min(total_confidence, 0.95),  # Never 100%
             "pattern_confidence_used": pattern_confidence,
-            "verification_boost": verification_boost,
-            "reason": f"Pattern ({pattern_confidence:.0%}) + Verification ({verification_boost:.0%})",
+            "verification_signal": verification_signal,
+            "reason": f"Pattern ({pattern_confidence:.0%}) + SMTP signal ({verification_signal:.0%})",
         }
 
     @staticmethod
     def score_deliverability(
         email: str,
-        verification_status: str,
+        smtp_result: Optional[SMTPVerificationResult] = None,
         last_verified_at: Optional[datetime] = None,
-        mx_valid: bool = False,
-        catch_all: bool = False,
     ) -> Dict:
         """
         LAYER 3: Will this email reach inbox TODAY?
         
-        This is where decay, MX, catch-all apply.
-        
-        Rules:
-        - MX invalid: Cannot deliver
-        - Catch-all: Can deliver but risky
-        - Old verification: Might be stale
-        - SMTP reject: Cannot deliver
-        
-        Returns:
-            {
-                "deliverable": bool,
-                "deliverability_confidence": 0.0-1.0,
-                "reason": str
-            }
+        This is PRACTICAL, not factual.
+        SMTP is the primary signal here.
+        Time decay applies.
         """
         
-        # No MX = not deliverable
-        if not mx_valid:
+        if not smtp_result:
+            return {
+                "deliverable": None,
+                "deliverability_confidence": 0.0,
+                "reason": "No verification performed",
+            }
+        
+        interpreter = SMTPResultInterpreter()
+        interpretation = interpreter.interpret(smtp_result)
+        
+        # No MX = cannot deliver
+        if not interpretation.get("mx_valid"):
             return {
                 "deliverable": False,
                 "deliverability_confidence": 0.0,
-                "reason": "No valid MX records for domain",
+                "reason": "No valid MX records",
             }
         
-        # SMTP rejected = not deliverable
-        if verification_status == "invalid":
+        # Cannot verify syntax = cannot deliver
+        if not interpretation.get("syntax_valid"):
             return {
                 "deliverable": False,
                 "deliverability_confidence": 0.0,
-                "reason": "SMTP verification failed",
+                "reason": "Email syntax invalid",
             }
         
-        # SMTP accepted = deliverable
-        if verification_status == "valid":
-            confidence = 0.95
-            reason = "SMTP verified"
-            
-            # Age decay (slow)
-            if last_verified_at:
-                days_old = (datetime.utcnow() - last_verified_at).days
-                if days_old > 180:
-                    confidence = 0.85
-                    reason = "SMTP verified (180+ days old, consider re-verify)"
-            
+        # SMTP rejects = cannot deliver
+        if not interpretation.get("smtp_accepts"):
             return {
-                "deliverable": True,
-                "deliverability_confidence": confidence,
-                "reason": reason,
+                "deliverable": False,
+                "deliverability_confidence": 0.0,
+                "reason": "SMTP server rejected this email",
             }
         
-        # Catch-all = technically deliverable but risky
-        if catch_all:
-            return {
-                "deliverable": True,
-                "deliverability_confidence": 0.5,
-                "reason": "Domain is catch-all (accepts any address)",
-            }
+        # SMTP accepts = deliverable (but apply decay)
+        confidence = 0.95
+        reason = "SMTP accepted"
         
-        # Unknown
+        # Time decay (slow)
+        if last_verified_at:
+            days_old = (datetime.utcnow() - last_verified_at).days
+            if days_old > 180:
+                confidence = 0.85
+                reason = f"SMTP accepted {days_old} days ago (consider re-verify)"
+            elif days_old > 30:
+                confidence = 0.90
+                reason = f"SMTP accepted {days_old} days ago"
+        
+        # Catch-all = deliverable but risky
+        if interpretation.get("catch_all"):
+            confidence = 0.5
+            reason = "Domain is catch-all (accepts any address)"
+        
         return {
-            "deliverable": None,
-            "deliverability_confidence": 0.3,
-            "reason": "Verification status unknown",
+            "deliverable": True,
+            "deliverability_confidence": confidence,
+            "reason": reason,
         }
 
     @staticmethod
@@ -209,7 +208,7 @@ class LayeredConfidenceEngine:
         Key rule: If email doesn't exist, association is irrelevant.
         """
         
-        # If email doesn't exist, return only that
+        # If email doesn't exist, stop here
         if not existence.get("exists"):
             return {
                 "email_exists": False,
@@ -219,15 +218,15 @@ class LayeredConfidenceEngine:
                 "is_factual": False,
             }
         
-        # Email exists (factual = 100%)
+        # Email exists (factual = 1.0)
         response = {
             "email_exists": True,
-            "existence_confidence": 1.0,  # ALWAYS 1.0 if exists
+            "existence_confidence": 1.0,
             "reason_existence": existence.get("reason"),
             "is_factual": True,
         }
         
-        # Add association confidence if person was specified
+        # Add association if person was specified
         if association:
             response.update({
                 "person_match_confidence": association.get("person_match_confidence", 0.0),
@@ -242,15 +241,15 @@ class LayeredConfidenceEngine:
                 "reason_deliverability": deliverability.get("reason", ""),
             })
         
-        # Final UI confidence: existence (factual) vs association (probabilistic)
+        # Final confidence for UI
         if association:
-            # User asked about a person: show both
+            # Person search: show both
             response["display_confidence"] = {
                 "exists": 1.0,
                 "matches_person": association.get("person_match_confidence", 0.0),
             }
         else:
-            # Just showing discovered email: show existence only
+            # Domain search: existence only
             response["display_confidence"] = 1.0
         
         response["show_to_user"] = True

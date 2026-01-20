@@ -62,8 +62,9 @@ class PatternTracker:
         company.metadata["pattern_attempts"] += 1
         company.metadata["pattern_last_tested"] = datetime.utcnow().isoformat()
 
-        # Record success
-        if success or verification_status == "valid":
+        # SOFT ISSUE FIX #3: Only count hard-valid verifications
+        # Catch-all should be neutral, not boost confidence
+        if verification_status == "valid":
             company.metadata["pattern_successes"] += 1
             company.metadata["pattern_verifications"] += 1
 
@@ -102,11 +103,22 @@ class PatternTracker:
         Logic:
         - If success rate >= 80% and verified >= 3 times → increase confidence
         - If success rate < 60% → decrease confidence
+        - Early failures (< 2 verifications, 0% success) → penalize slightly
         - Otherwise → keep or slightly adjust
         - Cap at 95% (never 100%)
         """
+        # MINOR IMPROVEMENT: Penalize early complete failures
+        # Apollo adjusts confidence even with minimal data if pattern completely fails
+        if verification_count < 2 and success_rate == 0:
+            new_confidence = max(initial_confidence - 0.05, 0.4)
+            logger.warning(
+                f"Early pattern failure detected. "
+                f"Reducing confidence from {initial_confidence:.0%} to {new_confidence:.0%}"
+            )
+            return new_confidence
+        
         if verification_count < 2:
-            # Not enough data to adjust yet
+            # Not enough data to adjust yet (but not a complete failure)
             return initial_confidence
 
         # Boost confidence if pattern is working well
@@ -133,6 +145,7 @@ class PatternTracker:
             return {
                 "pattern": company.detected_pattern,
                 "confidence": company.pattern_confidence,
+                "confidence_label": self._get_confidence_label(company.pattern_confidence),
                 "attempts": 0,
                 "successes": 0,
                 "success_rate": 0.0,
@@ -146,9 +159,24 @@ class PatternTracker:
         return {
             "pattern": company.detected_pattern,
             "confidence": company.pattern_confidence,
+            "confidence_label": self._get_confidence_label(company.pattern_confidence),
             "attempts": attempts,
             "successes": successes,
             "verifications": verifications,
             "success_rate": success_rate,
             "last_tested": company.metadata.get("pattern_last_tested"),
         }
+
+    def _get_confidence_label(self, confidence: float) -> str:
+        """
+        Get UI-friendly confidence label for pattern confidence.
+        
+        Returns:
+            "High" (≥80%), "Medium" (60-79%), "Low" (<60%)
+        """
+        if confidence >= 0.8:
+            return "High"
+        elif confidence >= 0.6:
+            return "Medium"
+        else:
+            return "Low"

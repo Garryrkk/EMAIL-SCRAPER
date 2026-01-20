@@ -11,6 +11,15 @@ class ConfidenceEngine:
     2. Verification status
     3. Pattern confidence
     4. Occurrences
+    
+    CRITICAL SAFETY RULE:
+    These scores are ranking aids, UI ordering, and heuristics.
+    They are NEVER:
+    - existence confidence (handled separately in confidence_layered.py)
+    - factual truth claims
+    - to be persisted as ground truth
+    
+    Existence is binary and managed outside this engine.
     """
 
     @staticmethod
