@@ -1,169 +1,178 @@
 import logging
-from typing import Set
-import itertools
+from typing import List, Set, Optional, Tuple
+from inference.pattern_detector import PatternDetector
 
 logger = logging.getLogger(__name__)
 
 
 class EmailGenerator:
-    """Generate email permutations based on patterns."""
+    """
+    Generate email candidates ONLY if:
+    1. Pattern has been confirmed from discovered emails
+    2. Pattern confidence >= 60%
+    
+    All generated emails are marked as INFERRED (unverified guesses).
+    """
 
     def __init__(self):
-        self.patterns = [
-            "firstname.lastname",
-            "firstname",
-            "f.lastname",
-            "flastname",
-            "firstname_lastname",
-            "fn",
-            "firstnameln",
-            "firstname-lastname",
-            "last.first",
-            "lastnamefirst",
-        ]
+        self.detector = PatternDetector()
 
-    def generate_from_person(
+    def generate_candidates(
         self,
         first_name: str,
         last_name: str,
         domain: str,
-        detected_pattern: str = None,
-    ) -> Set[str]:
-        """Generate email permutations."""
-        emails = set()
+        pattern: Optional[str] = None,
+        pattern_confidence: float = 0.0,
+    ) -> List[dict]:
+        """
+        Generate email candidates for a person.
+        
+        RULES:
+        - Only generate if pattern exists and confidence >= 60%
+        - All generated emails marked as "inferred"
+        - All start with confidence = 0.0 (unverified)
+        
+        Returns:
+            [
+                {
+                    "email": "john.doe@company.com",
+                    "source": "inferred",
+                    "pattern_used": "first.last",
+                    "pattern_confidence": 0.80,
+                    "verification_status": "unverified",
+                    "confidence": 0.0
+                },
+                ...
+            ]
+        """
+        candidates = []
 
-        # Normalize names
+        # RULE 1: Only generate if we have a confirmed pattern
+        if not pattern or pattern_confidence < 0.6:
+            logger.warning(
+                f"Cannot generate candidates: "
+                f"pattern={pattern}, confidence={pattern_confidence:.2%}"
+            )
+            return []
+
+        # RULE 2: Validate pattern can apply to this person
+        if not self.detector.validate_pattern_for_person(first_name, last_name, pattern):
+            logger.warning(
+                f"Pattern {pattern} cannot apply to {first_name} {last_name}"
+            )
+            return []
+
+        # Generate ONLY using confirmed pattern
+        generated_email = self._generate_from_pattern(
+            first_name,
+            last_name,
+            domain,
+            pattern,
+        )
+
+        if generated_email:
+            candidates.append({
+                "email": generated_email,
+                "source": "inferred",
+                "pattern_used": pattern,
+                "pattern_confidence": pattern_confidence,
+                "verification_status": "unverified",
+                "confidence": 0.0,  # UNVERIFIED START
+                "reason": f"Generated using confirmed pattern: {pattern}"
+            })
+
+        # Also generate common alternatives (but mark lower confidence)
+        alternative_patterns = self._get_alternative_patterns(pattern)
+        for alt_pattern in alternative_patterns:
+            alt_email = self._generate_from_pattern(
+                first_name,
+                last_name,
+                domain,
+                alt_pattern,
+            )
+            if alt_email and alt_email != generated_email:
+                candidates.append({
+                    "email": alt_email,
+                    "source": "inferred",
+                    "pattern_used": alt_pattern,
+                    "pattern_confidence": pattern_confidence * 0.7,  # Lower confidence for alternatives
+                    "verification_status": "unverified",
+                    "confidence": 0.0,
+                    "reason": f"Generated using alternative pattern: {alt_pattern}"
+                })
+
+        logger.info(
+            f"Generated {len(candidates)} candidates for "
+            f"{first_name} {last_name} @ {domain}"
+        )
+
+        return candidates
+
+    def _generate_from_pattern(
+        self,
+        first_name: str,
+        last_name: str,
+        domain: str,
+        pattern: str,
+    ) -> Optional[str]:
+        """
+        Apply pattern to names.
+        Returns email or None if pattern can't apply.
+        """
         first = self._normalize_name(first_name)
         last = self._normalize_name(last_name)
 
-        # If pattern detected, prioritize that
-        if detected_pattern:
-            email = self._generate_from_pattern(
-                first,
-                last,
-                domain,
-                detected_pattern,
-            )
-            if email:
-                emails.add(email)
+        if not first or not last:
+            return None
 
-        # Generate alternatives
-        for pattern in self.patterns:
-            email = self._generate_from_pattern(first, last, domain, pattern)
-            if email and email not in emails:
-                emails.add(email)
+        local = None
 
-        return emails
+        if pattern == "first.last":
+            local = f"{first}.{last}"
+        elif pattern == "first_last":
+            local = f"{first}_{last}"
+        elif pattern == "first-last":
+            local = f"{first}-{last}"
+        elif pattern == "firstlast":
+            local = f"{first}{last}"
+        elif pattern == "f.last":
+            local = f"{first[0]}.{last}"
+        elif pattern == "flast":
+            local = f"{first[0]}{last}"
+        elif pattern == "f_last":
+            local = f"{first[0]}_{last}"
+        elif pattern == "last.first":
+            local = f"{last}.{first}"
+        elif pattern == "lastfirst":
+            local = f"{last}{first}"
+        else:
+            return None
+
+        if not local:
+            return None
+
+        # Clean up
+        local = local.lower().strip()
+        local = local.replace("--", "-").replace("__", "_").replace("..", ".")
+
+        return f"{local}@{domain}"
 
     def _normalize_name(self, name: str) -> str:
         """Normalize name."""
         if not name:
             return ""
-        return name.strip().lower()
+        return name.strip().lower().replace(" ", "")
 
-    def _generate_from_pattern(
-        self,
-        first: str,
-        last: str,
-        domain: str,
-        pattern: str,
-    ) -> str:
-        """Generate single email from pattern."""
-        try:
-            replacements = {
-                "firstname": first,
-                "lastname": last,
-                "f": first[0] if first else "",
-                "l": last[0] if last else "",
-                "fn": (first[0] if first else "") + (last if last else ""),
-                "fl": (first[0] if first else "") + (last[0] if last else ""),
-                "ln": (last if last else "") + (first[0] if first else ""),
-                "ln": (last if last else "") + (first if first else ""),
-            }
+    def _get_alternative_patterns(self, primary_pattern: str) -> List[str]:
+        """Get related patterns to also try."""
+        alternatives = {
+            "first.last": ["f.last", "flast", "first_last"],
+            "first_last": ["first.last", "f.last", "firstlast"],
+            "f.last": ["first.last", "flast"],
+            "flast": ["f.last", "first.last"],
+            "firstlast": ["first.last", "first_last"],
+            "first-last": ["first.last", "first_last"],
+        }
 
-            local = pattern
-            for key, value in replacements.items():
-                local = local.replace(key, value)
-
-            # Clean up
-            local = local.replace("--", "-").replace("__", "_")
-            local = local.strip("-_.")
-
-            if not local or not first or not last:
-                return None
-
-            return f"{local}@{domain}"
-
-        except Exception as e:
-            logger.error(f"Error generating email: {e}")
-            return None
-
-    def generate_from_company_pattern(
-        self,
-        first_name: str,
-        last_name: str,
-        domain: str,
-        pattern: str,
-        confidence: float,
-    ) -> str:
-        """Generate email using company pattern."""
-        if confidence < 0.5:
-            return None
-
-        return self._generate_from_pattern(
-            self._normalize_name(first_name),
-            self._normalize_name(last_name),
-            domain,
-            pattern,
-        )
-
-    def detect_pattern(
-        self,
-        emails: list,
-        domain: str,
-    ) -> tuple[str, float]:
-        """Detect dominant email pattern."""
-        if not emails:
-            return None, 0.0
-
-        # Filter to company domain emails only
-        company_emails = [
-            e for e in emails
-            if e.split("@")[1] == domain
-        ]
-
-        if not company_emails:
-            return None, 0.0
-
-        patterns_found = {}
-
-        # Analyze each email
-        for email in company_emails:
-            local = email.split("@")[0].lower()
-            pattern = self._reverse_engineer_pattern(local)
-            patterns_found[pattern] = patterns_found.get(pattern, 0) + 1
-
-        if not patterns_found:
-            return None, 0.0
-
-        # Get most common pattern
-        dominant_pattern = max(patterns_found, key=patterns_found.get)
-        confidence = patterns_found[dominant_pattern] / len(company_emails)
-
-        return dominant_pattern, confidence
-
-    def _reverse_engineer_pattern(self, local: str) -> str:
-        """Reverse engineer pattern from email local part."""
-        # This is a simplified version
-        # In production, you'd use ML/heuristics
-        
-        if "." in local:
-            return "firstname.lastname"
-        elif "_" in local:
-            return "firstname_lastname"
-        elif "-" in local:
-            return "firstname-lastname"
-        elif len(local) > 10:
-            return "firstname.lastname"
-        else:
-            return "unknown"
+        return alternatives.get(primary_pattern, [])
