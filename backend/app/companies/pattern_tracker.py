@@ -2,7 +2,7 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
 
-from companies.service import CompanyService
+from app.companies.service import CompanyService
 
 logger = logging.getLogger(__name__)
 

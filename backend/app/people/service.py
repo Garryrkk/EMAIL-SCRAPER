@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import uuid
 
-from people.model import Person
+from app.people.model import Person
 
 logger = logging.getLogger(__name__)
 

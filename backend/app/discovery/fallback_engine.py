@@ -1,6 +1,6 @@
 import logging
 from typing import List, Dict, Optional
-from verification.aggregator import VerificationAggregator
+from app.verification.aggregator import VerificationAggregator
 
 logger = logging.getLogger(__name__)
 

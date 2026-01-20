@@ -1,6 +1,6 @@
 import logging
 from typing import List, Set, Optional, Tuple
-from inference.pattern_detector import PatternDetector
+from app.inference.pattern_detector import PatternDetector
 
 logger = logging.getLogger(__name__)
 
