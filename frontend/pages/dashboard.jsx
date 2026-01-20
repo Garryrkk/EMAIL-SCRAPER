@@ -54,13 +54,13 @@ export default function Dashboard() {
 		bootstrap();
 	}, [router]);
 
-	const handleSearch = async ({ domain, firstName, lastName }) => {
+	const handleSearch = async ({ domain }) => {
 		setSearching(true);
 		setError("");
 		setCompany(null);
 		setResults([]);
 		try {
-			const res = await searchDomain({ domain, firstName, lastName });
+			const res = await searchDomain(domain);
 			setResults(res.emails || []);
 			try {
 				const companyData = await getCompany(domain);

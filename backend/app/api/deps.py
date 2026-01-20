@@ -84,3 +84,21 @@ async def check_credits(
         return current_user
 
     return _check
+
+
+async def get_optional_user(
+    authorization: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_db),
+) -> Optional[User]:
+    """Get current user if authenticated, otherwise None (for public endpoints)."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+
+    try:
+        token = authorization.replace("Bearer ", "")
+        user_id = get_user_id_from_token(token)
+        user_service = UserService(db)
+        user = await user_service.get_user_by_id(user_id)
+        return user
+    except Exception:
+        return None

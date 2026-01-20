@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from app.api.routes import auth, companies, search, emails, users
+from app.api.routes import people_router
 
 router = APIRouter()
 
@@ -17,3 +18,6 @@ router.include_router(search.router, prefix="/search", tags=["search"])
 
 # Email routes
 router.include_router(emails.router, prefix="/emails", tags=["emails"])
+
+# People routes
+router.include_router(people_router.router, prefix="/people", tags=["people"])

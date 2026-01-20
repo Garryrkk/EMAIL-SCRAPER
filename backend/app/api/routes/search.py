@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 import asyncio
 
-from app.api.deps import get_current_user, check_user_rate_limit, get_db
+from app.api.deps import get_current_user, check_user_rate_limit, get_db, get_optional_user
 from app.users.model import User
 
 from app.companies.service import CompanyService
@@ -64,7 +64,7 @@ async def search_domain(
     req: SearchDomainRequest,
     include_unverified: bool = Query(False),
     allow_fallback: bool = Query(True),
-    current_user: User = Depends(check_user_rate_limit),
+    current_user: Optional[User] = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -114,9 +114,11 @@ async def search_domain(
 
         if work_for_pattern:
             pattern_detector = PatternDetector()
-            work_email_addresses = [e["email"] for e in work_for_pattern]
+            # Convert to the format expected by pattern_detector
+            # It expects list of dicts with "email" and optional "is_role_based"
+            work_email_dicts = [{"email": e["email"], "is_role_based": False} for e in work_for_pattern]
             pattern, pattern_confidence = pattern_detector.learn_from_discovered(
-                work_email_addresses
+                work_email_dicts
             )
 
         # === STAGE 3: DECIDE - NO GUESSING RULE ===
@@ -155,26 +157,30 @@ async def search_domain(
             email_type = email_data.get("email_type", "work")
 
             # LAYER 1: Existence confidence (for discovered emails = 1.0)
+            # For discovered emails, we don't need SMTP result - they're facts
             existence = confidence_engine.score_email_existence(
                 email=email,
                 source="discovered",  # All are discovered
-                verification_status=verification.verification_status,
+                smtp_result=None,  # Skip SMTP for discovered emails (they're facts)
             )
 
             # LAYER 3: Deliverability confidence
-            deliverability = confidence_engine.score_deliverability(
-                email=email,
-                verification_status=verification.verification_status,
-                mx_valid=verification.mx_exists,
-                catch_all=(verification.verification_status == "catch_all"),
-            )
+            # Simplified: use verification result directly
+            deliverability = {
+                "deliverable": verification.smtp_accepted,
+                "deliverability_confidence": verification.confidence,
+                "reason": verification.reason,
+                "mx_exists": verification.mx_exists,
+                "catch_all": verification.catch_all,
+            }
 
             # Combine layers (no association layer for domain search)
-            combined = confidence_engine.combine_layers(
-                existence=existence,
-                association=None,
-                deliverability=deliverability,
-            )
+            combined = {
+                "email_exists": existence["exists"],
+                "existence_confidence": existence["existence_confidence"],
+                "deliverability_confidence": deliverability["deliverability_confidence"],
+                "reason_existence": existence["reason"],
+            }
 
             # Enforce response rules
             email_result = {
@@ -246,7 +252,7 @@ async def search_domain(
 @router.post("/person")
 async def search_person(
     req: SearchPersonRequest,
-    current_user: User = Depends(check_user_rate_limit),
+    current_user: Optional[User] = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
